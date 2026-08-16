@@ -28,7 +28,7 @@ app.post("/api/extrair", async (req, res) => {
 
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ args: ["--no-sandbox", "--disable-setuid-sandbox"] });
     const page = await browser.newPage();
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForTimeout(2000);
