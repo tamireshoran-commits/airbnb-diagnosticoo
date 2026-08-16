@@ -116,6 +116,39 @@ function geminiImagens(prompt, imagens) {
   return geminiChamar(partes);
 }
 
+const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Sobrecarga e limite de velocidade sao passageiros: vale esperar e insistir.
+function ehTemporario(err) {
+  const msg = String(err?.message || "").toLowerCase();
+  return (
+    err?.status === 429 ||
+    err?.status === 503 ||
+    err?.status === 529 ||
+    err?.geminiStatus === "RESOURCE_EXHAUSTED" ||
+    err?.geminiStatus === "UNAVAILABLE" ||
+    msg.includes("high demand") ||
+    msg.includes("overloaded") ||
+    msg.includes("rate limit")
+  );
+}
+
+async function comRetentativas(executar, tentativas = 3) {
+  let ultimoErro;
+  for (let i = 0; i < tentativas; i++) {
+    try {
+      return await executar();
+    } catch (err) {
+      ultimoErro = err;
+      if (!ehTemporario(err) || i === tentativas - 1) throw err;
+      const espera = 2000 * Math.pow(2, i); // 2s, depois 4s
+      console.error(`IA sobrecarregada, tentando de novo em ${espera / 1000}s...`);
+      await dormir(espera);
+    }
+  }
+  throw ultimoErro;
+}
+
 // Uma IA de cada vez, na ordem de preferencia, caindo para a outra se falhar.
 async function comFallback(tentativas) {
   const disponiveis = tentativas.filter((t) => t.disponivel);
@@ -128,7 +161,7 @@ async function comFallback(tentativas) {
   let ultimoErro;
   for (const tentativa of disponiveis) {
     try {
-      const texto = await tentativa.executar();
+      const texto = await comRetentativas(tentativa.executar);
       return { texto, provedor: tentativa.nome };
     } catch (err) {
       ultimoErro = err;
