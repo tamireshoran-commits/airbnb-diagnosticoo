@@ -650,6 +650,26 @@ function renderPerdaSelos() {
       </div>
       <button id="btnCalcularPerda" type="button">Calcular perda</button>
     </div>
+
+    <details style="margin-top:14px;">
+      <summary style="cursor:pointer; font-size:13px; color:var(--accent); font-weight:600;">Ajustar as premissas do cálculo</summary>
+      <div class="hint" style="margin:10px 0;">
+        O Airbnb não publica quanto cada selo aumenta a ocupação. Os valores abaixo são um ponto de partida
+        conservador, não um dado oficial. Se a sua experiência mostra um efeito maior, aumente aqui e a
+        projeção inteira se ajusta.
+      </div>
+      <div class="row">
+        <div style="flex:1; min-width:150px;">
+          <label for="ganhoSuper">Superhost enche o calendário quanto % a mais?</label>
+          <input type="number" id="ganhoSuper" min="0" max="200" step="1" value="8" />
+        </div>
+        <div style="flex:1; min-width:150px;">
+          <label for="ganhoFav">Preferido dos Hóspedes: quanto % a mais?</label>
+          <input type="number" id="ganhoFav" min="0" max="200" step="1" value="6" />
+        </div>
+      </div>
+    </details>
+
     <div id="resultadoPerda" style="margin-top:14px;"></div>`;
 
   el("btnCalcularPerda").addEventListener("click", async () => {
@@ -665,6 +685,8 @@ function renderPerdaSelos() {
           e_superhost: a.e_superhost,
           e_guest_favorite: a.e_guest_favorite,
           nota: el("nota").value,
+          ganho_superhost: el("ganhoSuper").value,
+          ganho_guest_favorite: el("ganhoFav").value,
         }),
       });
       const d = await res.json();

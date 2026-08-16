@@ -228,8 +228,8 @@ app.post("/api/perda-selos", (req, res) => {
     },
     premissas: [
       `Diaria de R$ ${valorDiaria.toFixed(2)} mantida igual em todos os cenarios: o que muda e quantas noites o calendario enche.`,
-      `Estimativa usada: Superhost enche o calendario cerca de ${(upSuper * 100).toFixed(0)}% a mais, e o Preferido dos Hospedes cerca de ${(upFav * 100).toFixed(0)}% a mais, por melhorarem a posicao na busca e a taxa de conversao.`,
-      "Sao estimativas de mercado para dimensionar a ordem de grandeza, nao uma garantia do Airbnb.",
+      `Premissa em uso (ajustavel na tela): Superhost enche o calendario ${(upSuper * 100).toFixed(0)}% a mais, e o Preferido dos Hospedes ${(upFav * 100).toFixed(0)}% a mais.`,
+      "O Airbnb nao divulga esses percentuais. Sao premissas suas, nao dados oficiais: mude os valores acima e a projecao inteira se ajusta.",
     ],
   });
 });
