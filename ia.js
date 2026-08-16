@@ -133,7 +133,7 @@ function ehTemporario(err) {
   );
 }
 
-async function comRetentativas(executar, tentativas = 3) {
+async function comRetentativas(executar, tentativas = 4) {
   let ultimoErro;
   for (let i = 0; i < tentativas; i++) {
     try {
@@ -141,7 +141,7 @@ async function comRetentativas(executar, tentativas = 3) {
     } catch (err) {
       ultimoErro = err;
       if (!ehTemporario(err) || i === tentativas - 1) throw err;
-      const espera = 2000 * Math.pow(2, i); // 2s, depois 4s
+      const espera = 3000 * Math.pow(2, i); // 3s, 6s, 12s
       console.error(`IA sobrecarregada, tentando de novo em ${espera / 1000}s...`);
       await dormir(espera);
     }

@@ -5,6 +5,7 @@ const cors = require("cors");
 const { buscarAnuncio, buscarAvaliacoes } = require("./airbnb");
 const auth = require("./auth");
 const ia = require("./ia");
+const { DESCRICAO_REFERENCIA, CATEGORIAS } = require("./referencia");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -341,7 +342,7 @@ app.post("/api/sugerir-titulos", async (req, res) => {
   }
 });
 
-// ROTA: Analisar e reescrever a descricao
+// ROTA: Boletim da descricao, por categoria, contra um anuncio de referencia
 app.post("/api/analisar-descricao", async (req, res) => {
   try {
     const { descricao, titulo } = req.body || {};
@@ -353,20 +354,32 @@ app.post("/api/analisar-descricao", async (req, res) => {
       return res.status(500).json({ error: "Nenhuma chave de IA configurada no servidor." });
     }
 
+    const listaCategorias = CATEGORIAS.map(
+      (c) => `- ${c.nome} (peso ${c.peso}): avaliar ${c.oQueAvaliar}`
+    ).join("\n");
+
     const prompt =
-      "Voce e um copywriter especialista em anuncios de aluguel por temporada no Airbnb Brasil, e e severo. " +
-      `Titulo do anuncio: "${titulo || "(nao informado)"}".\n` +
-      `Descricao atual:\n"""${String(descricao).slice(0, 6000)}"""\n\n` +
-      "O Airbnb divide a descricao em 5 campos. Avalie cada um e reescreva a descricao inteira. " +
+      "Voce e um consultor severo de anuncios de aluguel por temporada no Airbnb Brasil.\n\n" +
+      "=== DESCRICAO DE REFERENCIA (padrao de mercado bem feito) ===\n" +
+      DESCRICAO_REFERENCIA.slice(0, 4000) +
+      "\n=== FIM DA REFERENCIA ===\n\n" +
+      "Essa referencia cobre horarios, regras, comodidades do predio, o espaco e o que o imovel NAO tem. " +
+      "A propria referencia falha em um ponto: nao explica como o hospede entra e sai do predio. " +
+      "Use a referencia como regua, mas nao a copie e nao a trate como perfeita.\n\n" +
+      `Agora avalie ESTE anuncio.\nTitulo: "${titulo || "(nao informado)"}"\n` +
+      `Descricao:\n"""${String(descricao).slice(0, 6000)}"""\n\n` +
+      "Categorias a avaliar:\n" + listaCategorias + "\n\n" +
       "Responda APENAS com JSON valido, sem blocos de codigo, neste formato:\n" +
-      '{"nota": 0, "veredito": "uma frase direta sobre a descricao atual", ' +
-      '"secoes": [{"nome": "Descricao do anuncio", "situacao": "ok|fraca|ausente", "problema": "...", "sugestao": "texto pronto para colar nesse campo"}], ' +
-      '"erros_graves": ["..."], "o_que_falta_dizer": ["..."]}\n' +
-      "Use exatamente estes 5 nomes em secoes, nessa ordem: Descricao do anuncio, Sua propriedade, Acesso do hospede, Interacao com os hospedes, Outras informacoes importantes. " +
-      "situacao e 'ausente' quando aquele conteudo nao aparece na descricao atual. " +
-      "Em sugestao, escreva o texto final pronto para o anfitriao copiar e colar, na voz do anfitriao, sem placeholders entre colchetes. " +
-      "Em erros_graves aponte coisas que afastam hospede: tom defensivo, lista de regras e multas logo no inicio, promessas vagas, texto so em caixa alta. " +
-      "Em o_que_falta_dizer aponte informacoes que o hospede procura e nao encontra (distancias reais, cama, wi-fi, estacionamento, check-in).";
+      '{"nota_final": 0, "veredito": "uma frase direta", ' +
+      '"categorias": [{"nome": "nome exato da categoria", "nota": 0, "situacao": "ok|fraca|ausente", "o_que_falta": "...", "texto_sugerido": "texto pronto para colar"}], ' +
+      '"comparacao_com_referencia": "onde este anuncio perde e onde ganha da referencia", ' +
+      '"top_3_acoes": ["a acao de maior impacto primeiro"]}\n' +
+      "Use exatamente os nomes de categoria listados acima, na mesma ordem, todas as 9. " +
+      "nota de cada categoria vai de 0 a 10. nota_final e a media ponderada pelos pesos, com uma casa decimal. " +
+      "situacao e 'ausente' quando o assunto nao aparece na descricao. " +
+      "Em texto_sugerido escreva o texto final na voz do anfitriao, pronto para copiar, sem colchetes e sem placeholders. " +
+      "Quando faltar um dado que so o anfitriao sabe (numero do predio, nome da fechadura), escreva a frase de um jeito que ele so precise ajustar o detalhe. " +
+      "Seja severo: nota alta so para categoria que realmente cobre o assunto bem.";
 
     const { texto, provedor } = await ia.analisarTexto(prompt, { maxTokens: 8192 });
     const analise = ia.lerJson(texto);
@@ -374,7 +387,7 @@ app.post("/api/analisar-descricao", async (req, res) => {
       return res.status(502).json({ error: "A IA respondeu num formato inesperado. Tente novamente." });
     }
 
-    return res.json({ analise, provedor });
+    return res.json({ analise, provedor, pesos: CATEGORIAS.map((c) => ({ nome: c.nome, peso: c.peso })) });
   } catch (err) {
     console.error("Erro em /api/analisar-descricao:", err.message);
     return res.status(500).json({ error: "Erro ao analisar a descricao: " + err.message });
