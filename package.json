@@ -4,7 +4,8 @@
   "description": "Ferramenta interna EasyRent - diagnostico de anuncio Airbnb",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "npx playwright install --with-deps chromium"
   },
   "dependencies": {
     "cors": "^2.8.6",
