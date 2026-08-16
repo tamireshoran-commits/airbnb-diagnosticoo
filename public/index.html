@@ -248,6 +248,9 @@
     <div class="field">
       <label for="titulo">Título do anúncio</label>
       <input type="text" id="titulo" placeholder="Ex: Apto Paris, alto padrão e bem localizado" />
+      <button id="btnSugerirTitulos" class="secondary" type="button" style="margin-top:8px;">Dê ideias de títulos melhores (até 50 caracteres)</button>
+      <div id="statusTitulos" class="status"></div>
+      <div id="resultadoTitulos" style="margin-top:10px;"></div>
     </div>
     <div class="field">
       <label for="descricao">Descrição do anúncio (ou copia inteira)</label>
@@ -510,6 +513,56 @@ function calcularImpactoAvaliacao() {
   }
 
   resultado.innerHTML = html;
+}
+
+el("btnSugerirTitulos").addEventListener("click", sugerirTitulos);
+
+async function sugerirTitulos() {
+  const btn = el("btnSugerirTitulos");
+  const status = el("statusTitulos");
+  const resultado = el("resultadoTitulos");
+
+  const tituloAtual = el("titulo").value.trim();
+  const descricao = el("descricao").value.trim();
+
+  if (!tituloAtual && !descricao) {
+    showStatus(status, "Preencha o título ou a descrição do anúncio antes de pedir sugestões.", "error");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Gerando sugestões...";
+  showStatus(status, "Pedindo sugestões para a IA...", "ok");
+  resultado.innerHTML = "";
+
+  try {
+    const res = await fetch(API_BASE + "/api/sugerir-titulos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tituloAtual, descricao }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Falha ao gerar sugestoes de titulo.");
+
+    hideStatus(status);
+    if (!data.titulos || !data.titulos.length) {
+      resultado.innerHTML = "<div class='hint'>A IA nao retornou sugestoes dessa vez, tente novamente.</div>";
+    } else {
+      let html = "<ul class='pontos'>";
+      data.titulos.forEach((t) => {
+        const len = t.length;
+        const corLen = len > 50 ? "var(--bad)" : "var(--text-dim)";
+        html += `<li class="bom">${t} <span style="color:${corLen}; font-size:12px;">(${len} caracteres)</span></li>`;
+      });
+      html += "</ul>";
+      resultado.innerHTML = html;
+    }
+  } catch (err) {
+    showStatus(status, "Erro: " + err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Dê ideias de títulos melhores (até 50 caracteres)";
+  }
 }
 
 async function analisarFotosComIA() {
