@@ -539,8 +539,8 @@ function renderResultados(data) {
   if (window.__fotosURLs && window.__fotosURLs.length) {
     fotosHtml += `
       <div style="margin-top:16px;">
-        <button id="btnAnalisarFotos">Analisar fotos com IA (Gemini, gratis)</button>
-        <div class="hint" style="margin-top:8px;">Analisa uma foto por vez (o plano gratis do Gemini limita a velocidade). Para um anuncio com muitas fotos, pode levar varios minutos, e a cota gratuita as vezes acaba no meio do caminho, se isso acontecer, so tentar de novo mais tarde.</div>
+        <button id="btnAnalisarFotos">Analisar as fotos com IA</button>
+        <div class="hint" style="margin-top:8px;">A IA olha as fotos como conjunto: se a capa é a mais forte, se falta mostrar algum cômodo, se a sequência convence, e quais fotos específicas estão puxando o anúncio para baixo.</div>
         <div id="statusFotosIA" class="status"></div>
         <div id="resultadoFotosIA" style="margin-top:14px;"></div>
       </div>`;
@@ -887,7 +887,7 @@ async function analisarFotosComIA() {
 
   btn.disabled = true;
   btn.textContent = "Analisando... (nao feche esta pagina)";
-  showStatus(status, "Enviando fotos para a IA, isso pode demorar um pouco.", "ok");
+  showStatus(status, "A IA está olhando as fotos como conjunto, aguarde.", "ok");
   resultado.innerHTML = "";
 
   try {
@@ -900,42 +900,80 @@ async function analisarFotosComIA() {
     if (!res.ok) throw new Error(data.error || "Falha ao analisar as fotos.");
 
     hideStatus(status);
+    const a = data.analise || {};
+    const urls = data.urls || [];
+    const miniatura = (n) => {
+      const u = urls[n - 1];
+      return u ? `<img src="${u.split("?")[0]}?im_w=240" style="width:110px; height:80px; object-fit:cover; border-radius:6px; flex-shrink:0;" />` : "";
+    };
+
     let html = "";
-    data.resultados.forEach((r, i) => {
-      html += `<div class="card" style="margin-bottom:12px;">
-        <div style="display:flex; gap:14px; align-items:flex-start;">
-          <img src="${r.url}" style="width:110px; height:80px; object-fit:cover; border-radius:6px; flex-shrink:0;" />
-          <div>
-            <div class="hint" style="margin-bottom:4px;">Foto ${i + 1}${r.detalhe && r.detalhe.nota !== undefined ? ` · <strong style="color:${r.detalhe.nota >= 8 ? "var(--good)" : r.detalhe.nota >= 6 ? "var(--warn)" : "var(--bad)"};">nota ${r.detalhe.nota}/10</strong>` : ""}</div>
-            ${
-              r.detalhe
-                ? `<div style="font-size:14px;">
-                     <div><strong>Problema:</strong> ${r.detalhe.problema_principal || "-"}</div>
-                     <div style="margin-top:4px;"><strong>Luz:</strong> ${r.detalhe.luz || "-"}</div>
-                     <div style="margin-top:4px;"><strong>Enquadramento:</strong> ${r.detalhe.enquadramento || "-"}</div>
-                     <div style="margin-top:6px; color:var(--good);"><strong>Como corrigir:</strong> ${r.detalhe.como_corrigir || "-"}</div>
-                   </div>`
-                : r.analise
-                ? `<div>${r.analise}</div>`
-                : `<div style="color:var(--bad);">Nao foi possivel analisar: ${r.erro}</div>`
-            }
-          </div>
+
+    if (a.nota_conjunto !== undefined) {
+      const cor = a.nota_conjunto >= 8 ? "var(--good)" : a.nota_conjunto >= 6 ? "var(--warn)" : "var(--bad)";
+      html += `<div class="metric"><span class="num" style="color:${cor};">${a.nota_conjunto}/10</span><span class="label">${a.veredito || "nota do conjunto de fotos"}</span></div>`;
+    }
+
+    if (a.capa) {
+      const ok = a.capa.e_a_melhor_escolha;
+      html += `<div style="margin-top:16px; display:flex; gap:14px; align-items:flex-start;">
+        ${miniatura(1)}
+        <div>
+          <div style="font-weight:700; font-size:14px;">Foto de capa ${ok ? '<span class="badge-pill sim">boa escolha</span>' : '<span class="badge-pill nao">deveria trocar</span>'}</div>
+          <div class="hint" style="margin-top:4px;">${a.capa.comentario || ""}</div>
+          ${!ok && a.capa.sugestao_de_capa ? `<div style="margin-top:8px; display:flex; gap:10px; align-items:center;"><span class="hint">Sugestão: usar a foto ${a.capa.sugestao_de_capa}</span>${miniatura(a.capa.sugestao_de_capa)}</div>` : ""}
         </div>
       </div>`;
-    });
+    }
+
+    const linha = (titulo, texto) =>
+      texto ? `<div style="margin-top:14px;"><div style="font-weight:700; font-size:14px;">${titulo}</div><div class="hint" style="margin-top:4px;">${texto}</div></div>` : "";
+
+    if (a.cobertura) {
+      const faltando = a.cobertura.comodos_faltando || [];
+      html += `<div style="margin-top:14px;">
+        <div style="font-weight:700; font-size:14px;">O que falta mostrar</div>
+        ${faltando.length ? `<ul class="pontos">${faltando.map((c) => `<li class="melhorar">${c}</li>`).join("")}</ul>` : `<div class="hint" style="margin-top:4px;">Nada faltando de importante.</div>`}
+        ${a.cobertura.comentario ? `<div class="hint" style="margin-top:4px;">${a.cobertura.comentario}</div>` : ""}
+      </div>`;
+    }
+
+    html += linha("Consistência entre as fotos", a.consistencia);
+    html += linha("Ordem das fotos", a.ordem);
+
+    if (a.piores_fotos && a.piores_fotos.length) {
+      html += `<div style="margin-top:18px;"><div style="font-weight:700; font-size:14px; margin-bottom:8px;">Fotos que mais atrapalham</div>`;
+      a.piores_fotos.forEach((p) => {
+        html += `<div class="card" style="margin-bottom:10px;">
+          <div style="display:flex; gap:14px; align-items:flex-start;">
+            ${miniatura(p.numero)}
+            <div>
+              <div class="hint" style="margin-bottom:4px;">Foto ${p.numero}</div>
+              <div style="font-size:14px;"><strong>Problema:</strong> ${p.problema || "-"}</div>
+              <div style="font-size:14px; margin-top:4px; color:var(--good);"><strong>Como corrigir:</strong> ${p.como_corrigir || "-"}</div>
+            </div>
+          </div>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+
+    if (a.acoes_prioritarias && a.acoes_prioritarias.length) {
+      html += `<div style="font-weight:700; font-size:14px; margin:18px 0 8px;">Faça isso primeiro</div><ul class="pontos">`;
+      a.acoes_prioritarias.forEach((i) => (html += `<li class="melhorar">${i}</li>`));
+      html += `</ul>`;
+    }
+
     if (data.total_disponivel > data.total_analisadas) {
-      html += `<div class="hint">Analisadas ${data.total_analisadas} de ${data.total_disponivel} fotos encontradas (limite de seguranca por rodada).</div>`;
+      html += `<div class="hint" style="margin-top:12px;">Analisadas as ${data.total_analisadas} primeiras de ${data.total_disponivel} fotos.</div>`;
     }
-    const falhas = data.resultados.filter((r) => r.erro).length;
-    if (falhas) {
-      html += `<div class="hint" style="color:var(--bad); margin-top:6px;">${falhas} foto(s) não puderam ser analisadas nesta rodada. Tente novamente daqui a pouco.</div>`;
-    }
-    resultado.innerHTML = html;
+
+    resultado.innerHTML = html || "<div class='hint'>A IA não retornou uma análise dessa vez.</div>";
   } catch (err) {
     showStatus(status, "Erro: " + err.message, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "Analisar fotos com IA (Gemini, gratis)";
+    btn.textContent = "Analisar as fotos com IA";
   }
 }
 </script>
