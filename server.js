@@ -3,6 +3,7 @@ const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const { buscarAnuncio, buscarAvaliacoes } = require("./airbnb");
+const auth = require("./auth");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -18,8 +19,42 @@ function paraNumero(valor) {
   return Number.isNaN(n) ? null : n;
 }
 
+// Configuracao que o navegador precisa para montar a tela de login
+app.get("/api/config", (req, res) => {
+  res.json({
+    login_ativo: auth.loginConfigurado(),
+    supabase_url: auth.SUPABASE_URL,
+    supabase_anon_key: auth.SUPABASE_ANON_KEY,
+  });
+});
+
+// Situacao da conta de quem esta logado
+app.get("/api/minha-conta", async (req, res) => {
+  if (!auth.loginConfigurado()) {
+    return res.json({ login_ativo: false });
+  }
+  const cabecalho = req.headers.authorization || "";
+  const token = cabecalho.startsWith("Bearer ") ? cabecalho.slice(7) : null;
+  try {
+    const usuario = await auth.usuarioDoToken(token);
+    if (!usuario) return res.status(401).json({ error: "Nao autenticado." });
+    const perfil = await auth.perfilDoUsuario(usuario);
+    return res.json({
+      login_ativo: true,
+      email: usuario.email,
+      nome: usuario.user_metadata?.full_name || null,
+      analises_usadas: perfil.analises_usadas || 0,
+      limite_gratis: perfil.limite_gratis ?? 1,
+      plano: perfil.plano || "gratis",
+      tem_credito: auth.temCredito(perfil),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // ROTA 1: Buscar dados automaticamente
-app.post("/api/extrair", async (req, res) => {
+app.post("/api/extrair", auth.exigirCredito, async (req, res) => {
   const { url } = req.body || {};
 
   if (!url || !/^https?:\/\/(www\.)?airbnb\.[a-z.]+\//i.test(url)) {
@@ -38,8 +73,22 @@ app.post("/api/extrair", async (req, res) => {
       console.error("Falha ao ler avaliacoes:", err.message);
     }
 
+    let conta = null;
+    if (req.perfil) {
+      try {
+        const atualizado = await auth.registrarAnalise(req.perfil.user_id, req.perfil.analises_usadas || 0);
+        conta = {
+          analises_usadas: atualizado.analises_usadas,
+          limite_gratis: atualizado.limite_gratis ?? 1,
+          plano: atualizado.plano || "gratis",
+        };
+      } catch (err) {
+        console.error("Falha ao registrar analise:", err.message);
+      }
+    }
+
     const { apiKey, ...publico } = anuncio;
-    return res.json({ ...publico, num_avaliacoes: totalAvaliacoes, avaliacoes });
+    return res.json({ ...publico, num_avaliacoes: totalAvaliacoes, avaliacoes, conta });
   } catch (err) {
     console.error("Erro em /api/extrair:", err.message);
     return res.status(502).json({ error: "Nao foi possivel buscar o anuncio: " + err.message });

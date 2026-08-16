@@ -206,6 +206,14 @@
 </head>
 <body>
 
+<div id="barraConta" style="display:none; max-width:880px; margin:0 auto; padding:16px 24px 0; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+  <div id="infoConta" class="hint" style="margin:0;"></div>
+  <div>
+    <button id="btnEntrar" type="button" style="display:none;">Entrar com Google</button>
+    <button id="btnSair" class="secondary" type="button" style="display:none;">Sair</button>
+  </div>
+</div>
+
 <header>
   <div class="eyebrow">EasyRent · Ferramenta interna</div>
   <h1>Diagnóstico de anúncio</h1>
@@ -301,8 +309,88 @@
   <p>Ferramenta interna EasyRent. Análise baseada em dados públicos do Airbnb e boas práticas de mercado.</p>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 const API_BASE = "";
+
+// ---------- Login com Google (via Supabase) ----------
+let sb = null;
+let sessaoAtual = null;
+
+async function iniciarLogin() {
+  let cfg;
+  try {
+    cfg = await (await fetch(API_BASE + "/api/config")).json();
+  } catch (_) {
+    return;
+  }
+  if (!cfg.login_ativo) return;
+
+  sb = window.supabase.createClient(cfg.supabase_url, cfg.supabase_anon_key);
+  el("barraConta").style.display = "flex";
+
+  const { data } = await sb.auth.getSession();
+  sessaoAtual = data.session;
+  await atualizarBarraConta();
+
+  sb.auth.onAuthStateChange(async (_evento, sessao) => {
+    sessaoAtual = sessao;
+    await atualizarBarraConta();
+  });
+
+  el("btnEntrar").addEventListener("click", async () => {
+    await sb.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo: window.location.origin },
+    });
+  });
+
+  el("btnSair").addEventListener("click", async () => {
+    await sb.auth.signOut();
+    window.location.reload();
+  });
+}
+
+async function atualizarBarraConta() {
+  const info = el("infoConta");
+  const entrar = el("btnEntrar");
+  const sair = el("btnSair");
+
+  if (!sessaoAtual) {
+    info.textContent = "Entre com sua conta Google para analisar um anúncio. A primeira análise é gratuita.";
+    entrar.style.display = "";
+    sair.style.display = "none";
+    return;
+  }
+
+  entrar.style.display = "none";
+  sair.style.display = "";
+
+  try {
+    const res = await fetch(API_BASE + "/api/minha-conta", {
+      headers: { Authorization: "Bearer " + sessaoAtual.access_token },
+    });
+    const c = await res.json();
+    if (!res.ok) throw new Error(c.error || "erro");
+
+    if (c.plano !== "gratis") {
+      info.innerHTML = `Conectada como <strong>${c.email}</strong> · plano ${c.plano}`;
+    } else {
+      const restantes = Math.max(0, (c.limite_gratis ?? 1) - (c.analises_usadas || 0));
+      info.innerHTML = `Conectada como <strong>${c.email}</strong> · ${restantes > 0 ? `${restantes} análise gratuita disponível` : "análise gratuita já utilizada"}`;
+    }
+  } catch (_) {
+    info.textContent = "Conectada.";
+  }
+}
+
+function cabecalhosComLogin() {
+  const h = { "Content-Type": "application/json" };
+  if (sessaoAtual) h.Authorization = "Bearer " + sessaoAtual.access_token;
+  return h;
+}
+
+iniciarLogin();
 
 const el = (id) => document.getElementById(id);
 const showStatus = (el, msg, type) => { el.textContent = msg; el.className = `status show ${type}`; };
@@ -324,11 +412,21 @@ el("btnBuscar").addEventListener("click", async () => {
   try {
     const res = await fetch(API_BASE + "/api/extrair", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: cabecalhosComLogin(),
       body: JSON.stringify({ url }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Erro ao buscar o anuncio.");
+    if (!res.ok) {
+      if (data.precisa_login) {
+        showStatus(status, "Entre com sua conta Google (botão no topo da página) para analisar.", "error");
+        return;
+      }
+      if (data.precisa_pagar) {
+        showStatus(status, "Você já usou sua análise gratuita. Em breve será possível assinar para continuar.", "error");
+        return;
+      }
+      throw new Error(data.error || "Erro ao buscar o anuncio.");
+    }
 
     hideStatus(status);
     el("nota").value = data.nota ?? "";
@@ -342,6 +440,7 @@ el("btnBuscar").addEventListener("click", async () => {
     window.__anuncio = data;
 
     showStatus(status, "Dados carregados com sucesso!", "ok");
+    atualizarBarraConta();
   } catch (err) {
     showStatus(status, "Erro: " + err.message, "error");
   } finally {
