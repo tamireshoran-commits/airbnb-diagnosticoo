@@ -245,11 +245,6 @@ app.post("/api/diagnosticar", (req, res) => {
   }
 
   // Descricao
-  const NOMES_SECOES = { descricao_anuncio: "Descrição do anúncio", sua_propriedade: "Sua propriedade", acesso_hospede: "Acesso do hóspede", interacao_hospedes: "Interação com os hóspedes", outras_informacoes: "Outras informações importantes" };
-  const descricaoPorSecao = {};
-  ["descricao_anuncio", "sua_propriedade", "acesso_hospede", "interacao_hospedes", "outras_informacoes"].forEach((chave) => {
-    descricaoPorSecao[chave] = { texto: "", pontosFortes: [], pontosAMelhorar: [] };
-  });
 
   // Fotos
   const fotosPontosFortes = [];
@@ -283,7 +278,6 @@ app.post("/api/diagnosticar", (req, res) => {
 
   return res.json({
     avaliacoes_necessarias,
-    descricao: { secoes: descricaoPorSecao, nomesSecoes: NOMES_SECOES },
     fotos: { pontosFortes: fotosPontosFortes, pontosAMelhorar: fotosPontosAMelhorar },
     selo_preferido_hospedes: selo,
   });
@@ -344,6 +338,46 @@ app.post("/api/sugerir-titulos", async (req, res) => {
   } catch (err) {
     console.error("Erro em /api/sugerir-titulos:", err);
     return res.status(500).json({ error: "Erro interno: " + err.message });
+  }
+});
+
+// ROTA: Analisar e reescrever a descricao
+app.post("/api/analisar-descricao", async (req, res) => {
+  try {
+    const { descricao, titulo } = req.body || {};
+
+    if (!descricao || String(descricao).trim().length < 40) {
+      return res.status(400).json({ error: "Descricao muito curta ou vazia. Busque o anuncio ou cole a descricao completa." });
+    }
+    if (!ia.provedoresAtivos().length) {
+      return res.status(500).json({ error: "Nenhuma chave de IA configurada no servidor." });
+    }
+
+    const prompt =
+      "Voce e um copywriter especialista em anuncios de aluguel por temporada no Airbnb Brasil, e e severo. " +
+      `Titulo do anuncio: "${titulo || "(nao informado)"}".\n` +
+      `Descricao atual:\n"""${String(descricao).slice(0, 6000)}"""\n\n` +
+      "O Airbnb divide a descricao em 5 campos. Avalie cada um e reescreva a descricao inteira. " +
+      "Responda APENAS com JSON valido, sem blocos de codigo, neste formato:\n" +
+      '{"nota": 0, "veredito": "uma frase direta sobre a descricao atual", ' +
+      '"secoes": [{"nome": "Descricao do anuncio", "situacao": "ok|fraca|ausente", "problema": "...", "sugestao": "texto pronto para colar nesse campo"}], ' +
+      '"erros_graves": ["..."], "o_que_falta_dizer": ["..."]}\n' +
+      "Use exatamente estes 5 nomes em secoes, nessa ordem: Descricao do anuncio, Sua propriedade, Acesso do hospede, Interacao com os hospedes, Outras informacoes importantes. " +
+      "situacao e 'ausente' quando aquele conteudo nao aparece na descricao atual. " +
+      "Em sugestao, escreva o texto final pronto para o anfitriao copiar e colar, na voz do anfitriao, sem placeholders entre colchetes. " +
+      "Em erros_graves aponte coisas que afastam hospede: tom defensivo, lista de regras e multas logo no inicio, promessas vagas, texto so em caixa alta. " +
+      "Em o_que_falta_dizer aponte informacoes que o hospede procura e nao encontra (distancias reais, cama, wi-fi, estacionamento, check-in).";
+
+    const { texto, provedor } = await ia.analisarTexto(prompt, { maxTokens: 8192 });
+    const analise = ia.lerJson(texto);
+    if (!analise) {
+      return res.status(502).json({ error: "A IA respondeu num formato inesperado. Tente novamente." });
+    }
+
+    return res.json({ analise, provedor });
+  } catch (err) {
+    console.error("Erro em /api/analisar-descricao:", err.message);
+    return res.status(500).json({ error: "Erro ao analisar a descricao: " + err.message });
   }
 });
 

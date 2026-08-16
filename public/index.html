@@ -520,18 +520,12 @@ function renderResultados(data) {
   el("blocoAvaliacoes").insertAdjacentHTML("beforeend", calcHtml);
   el("btnCalcularImpacto").addEventListener("click", calcularImpactoAvaliacao);
 
-  const d = data.descricao;
-  let descHtml = "";
-  const ordemSecoes = ["descricao_anuncio", "sua_propriedade", "acesso_hospede", "interacao_hospedes", "outras_informacoes"];
-  ordemSecoes.forEach((chave) => {
-    const secao = d.secoes[chave];
-    const nome = d.nomesSecoes[chave];
-    descHtml += `<div style="margin-bottom:18px;">
-      <div style="font-weight:700; font-size:14px; margin-bottom:6px;">${nome}</div>
-      ${listaPontos(secao.pontosFortes, secao.pontosAMelhorar)}
-    </div>`;
-  });
-  el("blocoDescricao").innerHTML = descHtml;
+  el("blocoDescricao").innerHTML = `
+    <button id="btnAnalisarDescricao" type="button">Analisar e reescrever a descrição</button>
+    <div class="hint" style="margin-top:8px;">A IA avalia os 5 campos de descrição do Airbnb, aponta o que afasta hóspede e escreve um texto novo pronto para copiar.</div>
+    <div id="statusDescricaoIA" class="status"></div>
+    <div id="resultadoDescricaoIA" style="margin-top:14px;"></div>`;
+  el("btnAnalisarDescricao").addEventListener("click", analisarDescricaoComIA);
 
   const f = data.fotos;
   let fotosHtml = listaPontos(f.pontosFortes, f.pontosAMelhorar);
@@ -878,6 +872,88 @@ async function sugerirTitulos() {
     btn.disabled = false;
     btn.textContent = "Dê ideias de títulos melhores (até 50 caracteres)";
   }
+}
+
+
+async function analisarDescricaoComIA() {
+  const btn = el("btnAnalisarDescricao");
+  const status = el("statusDescricaoIA");
+  const alvo = el("resultadoDescricaoIA");
+
+  const descricao = el("descricao").value.trim();
+  if (descricao.length < 40) {
+    showStatus(status, "Descrição muito curta. Busque o anúncio ou cole a descrição completa no campo acima.", "error");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "Analisando e reescrevendo...";
+  showStatus(status, "A IA está lendo a descrição, aguarde.", "ok");
+  alvo.innerHTML = "";
+
+  try {
+    const res = await fetch(API_BASE + "/api/analisar-descricao", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ descricao, titulo: el("titulo").value }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "Falha ao analisar a descrição.");
+
+    const a = d.analise || {};
+    let html = "";
+
+    if (a.nota !== undefined) {
+      const cor = a.nota >= 8 ? "var(--good)" : a.nota >= 6 ? "var(--warn)" : "var(--bad)";
+      html += `<div class="metric"><span class="num" style="color:${cor};">${a.nota}/10</span><span class="label">${a.veredito || "nota da descrição atual"}</span></div>`;
+    }
+
+    const listaSimples = (titulo, itens) => {
+      if (!itens || !itens.length) return "";
+      let h = `<div style="font-weight:700; font-size:14px; margin:18px 0 8px;">${titulo}</div><ul class="pontos">`;
+      itens.forEach((i) => (h += `<li class="melhorar">${i}</li>`));
+      return h + `</ul>`;
+    };
+    html += listaSimples("O que está afastando hóspede", a.erros_graves);
+    html += listaSimples("O que falta dizer", a.o_que_falta_dizer);
+
+    if (a.secoes && a.secoes.length) {
+      html += `<div style="font-weight:700; font-size:14px; margin:20px 0 8px;">Texto novo, campo por campo</div>`;
+      a.secoes.forEach((sec, i) => {
+        const cls = sec.situacao === "ok" ? "sim" : sec.situacao === "ausente" ? "nao" : "indefinido";
+        const rotulo = sec.situacao === "ok" ? "OK" : sec.situacao === "ausente" ? "NÃO EXISTE" : "FRACA";
+        html += `<div class="card" style="margin-bottom:12px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <strong style="font-size:14px;">${sec.nome}</strong>
+            <span class="badge-pill ${cls}">${rotulo}</span>
+          </div>
+          ${sec.problema ? `<div class="hint" style="margin-top:6px;">${sec.problema}</div>` : ""}
+          ${sec.sugestao ? `
+            <textarea id="sugDesc${i}" style="margin-top:10px; min-height:120px;">${sec.sugestao}</textarea>
+            <button class="secondary" type="button" style="margin-top:8px;" onclick="copiarTexto('sugDesc${i}', this)">Copiar este texto</button>
+          ` : ""}
+        </div>`;
+      });
+    }
+
+    hideStatus(status);
+    alvo.innerHTML = html || "<div class='hint'>A IA não retornou uma análise dessa vez.</div>";
+  } catch (err) {
+    showStatus(status, "Erro: " + err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Analisar e reescrever a descrição";
+  }
+}
+
+function copiarTexto(id, botao) {
+  const campo = el(id);
+  campo.select();
+  navigator.clipboard.writeText(campo.value).then(() => {
+    const antes = botao.textContent;
+    botao.textContent = "Copiado!";
+    setTimeout(() => (botao.textContent = antes), 1500);
+  });
 }
 
 async function analisarFotosComIA() {
