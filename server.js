@@ -1,11 +1,8 @@
 require("dotenv").config();
-if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
-  process.env.PLAYWRIGHT_BROWSERS_PATH = "0";
-}
 const path = require("path");
 const express = require("express");
 const cors = require("cors");
-const { chromium } = require("playwright");
+const { buscarAnuncio, buscarAvaliacoes } = require("./airbnb");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,155 +22,141 @@ function paraNumero(valor) {
 app.post("/api/extrair", async (req, res) => {
   const { url } = req.body || {};
 
-  if (!url || !/^https?:\/\/(www\.)?airbnb\.com/i.test(url)) {
+  if (!url || !/^https?:\/\/(www\.)?airbnb\.[a-z.]+\//i.test(url)) {
     return res.status(400).json({ error: "Cole um link valido de um anuncio do Airbnb (ex: https://www.airbnb.com.br/rooms/12345)." });
   }
 
-  let browser;
-  const TIMEOUT_MS = 45000;
   try {
-    const resultado = await Promise.race([
-      extrairAnuncio(url, (b) => { browser = b; }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("A busca demorou demais e foi cancelada. Tente novamente ou preencha os dados manualmente.")), TIMEOUT_MS)
-      ),
-    ]);
-    return res.json(resultado);
+    const anuncio = await buscarAnuncio(url);
+    let avaliacoes = [];
+    let totalAvaliacoes = anuncio.num_avaliacoes;
+    try {
+      const r = await buscarAvaliacoes(anuncio.listingId, anuncio.apiKey);
+      avaliacoes = r.avaliacoes;
+      totalAvaliacoes = r.total || totalAvaliacoes;
+    } catch (err) {
+      console.error("Falha ao ler avaliacoes:", err.message);
+    }
+
+    const { apiKey, ...publico } = anuncio;
+    return res.json({ ...publico, num_avaliacoes: totalAvaliacoes, avaliacoes });
   } catch (err) {
     console.error("Erro em /api/extrair:", err.message);
     return res.status(502).json({ error: "Nao foi possivel buscar o anuncio: " + err.message });
-  } finally {
-    if (browser) await browser.close().catch(() => {});
   }
 });
 
-async function extrairAnuncio(url, setBrowser) {
-  const browser = await chromium.launch({
-      channel: "chromium",
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-    });
-    setBrowser(browser);
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
-    await page.waitForTimeout(1500);
+// ROTA: Analise critica das avaliacoes
+app.post("/api/analisar-avaliacoes", async (req, res) => {
+  const { avaliacoes } = req.body || {};
 
-    const textoVisivel = await page.evaluate(() => document.body.innerText);
-    const ariaLabels = await page.evaluate(() =>
-      Array.from(document.querySelectorAll("[aria-label]"))
-        .map((el) => el.getAttribute("aria-label"))
-        .filter(Boolean)
+  if (!Array.isArray(avaliacoes) || !avaliacoes.length) {
+    return res.status(400).json({ error: "Nenhuma avaliacao disponivel. Busque o anuncio automaticamente primeiro." });
+  }
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(500).json({ error: "Chave da API do Gemini nao encontrada." });
+  }
+
+  const negativas = avaliacoes.filter((a) => a.nota !== null && a.nota <= 4);
+  const semResposta = negativas.filter((a) => !a.resposta);
+
+  const linhas = avaliacoes
+    .slice(0, 120)
+    .map((a, i) => `[${i + 1}] Nota ${a.nota ?? "?"} (${a.data ?? "sem data"}): ${(a.texto || "").slice(0, 600)}${a.resposta ? `\n    RESPOSTA DO ANFITRIAO: ${a.resposta.slice(0, 300)}` : "\n    (o anfitriao NAO respondeu)"}`)
+    .join("\n");
+
+  const prompt =
+    "Voce e um consultor severo e direto de anuncios de aluguel por temporada no Airbnb Brasil. " +
+    "Abaixo estao as avaliacoes reais de um anuncio, com as respostas do anfitriao quando existirem.\n\n" +
+    linhas +
+    "\n\nResponda em portugues, sem rodeios e sem elogios vazios, em JSON valido com exatamente estas chaves:\n" +
+    '{"problemas_recorrentes": [{"problema": "...", "quantas_vezes": 0, "gravidade": "alta|media|baixa", "evidencia": "trecho curto de uma avaliacao real"}], ' +
+    '"erros_nas_respostas": ["..."], "o_que_esta_custando_dinheiro": ["..."], "acoes_prioritarias": ["..."]}\n' +
+    "Em problemas_recorrentes, liste no maximo 6, do mais grave ao menos grave, considerando so o que aparece de fato nas avaliacoes. " +
+    "Em erros_nas_respostas, aponte respostas defensivas, genericas, ou reclamacoes serias que ficaram sem resposta. " +
+    "Responda APENAS com o JSON, sem texto antes ou depois, sem blocos de codigo.";
+
+  try {
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      }
     );
-    const textoPagina = textoVisivel + "\n" + ariaLabels.join("\n");
+    const data = await geminiRes.json();
+    if (!geminiRes.ok) {
+      return res.status(502).json({ error: data?.error?.message || "Erro na API do Gemini." });
+    }
 
-    let titulo = "";
+    const texto = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const limpo = texto.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    let analise;
     try {
-      titulo = await page.$eval("h1", (el) => el.innerText.trim());
-    } catch (_) {}
-    if (!titulo) {
-      try {
-        titulo = await page.$eval('meta[property="og:title"]', (el) => el.content);
-      } catch (_) {}
+      analise = JSON.parse(limpo);
+    } catch (_) {
+      return res.status(502).json({ error: "A IA respondeu num formato inesperado. Tente novamente." });
     }
 
-    let nota = null;
-    let numAvaliacoes = null;
-    let m = textoPagina.match(/(\d[.,]\d{1,2})\s+de\s+5\s+estrelas\s+de\s+(\d+)\s+coment/i);
-    if (m) {
-      nota = paraNumero(m[1]);
-      numAvaliacoes = parseInt(m[2], 10);
-    }
+    return res.json({
+      analise,
+      estatisticas: {
+        total: avaliacoes.length,
+        negativas: negativas.length,
+        negativas_sem_resposta: semResposta.length,
+        taxa_resposta: avaliacoes.length
+          ? Math.round((avaliacoes.filter((a) => a.resposta).length / avaliacoes.length) * 100)
+          : 0,
+      },
+    });
+  } catch (err) {
+    console.error("Erro em /api/analisar-avaliacoes:", err.message);
+    return res.status(500).json({ error: "Erro interno: " + err.message });
+  }
+});
 
-    let descricao = "";
-    try {
-      const el = await page.$('[data-section-id*="DESCRIPTION"]');
-      if (el) descricao = await el.textContent();
-    } catch (_) {}
-    if (!descricao) {
-      try {
-        descricao = await page.$eval('meta[name="description"]', (el) => el.content);
-      } catch (_) {}
-    }
+// ROTA: Quanto o anuncio perde por nao ter os selos
+app.post("/api/perda-selos", (req, res) => {
+  const { diaria, ocupacao, e_superhost, e_guest_favorite, nota } = req.body || {};
 
-    let fotos = [];
-    try {
-      const botaoFotos = await page.$('button:has-text("Mostrar todas as fotos"), a:has-text("Mostrar todas as fotos")');
-      if (botaoFotos) {
-        await botaoFotos.click({ timeout: 5000 }).catch(() => {});
-        await page.waitForTimeout(1500);
-      }
+  const valorDiaria = paraNumero(diaria);
+  if (valorDiaria === null || valorDiaria <= 0) {
+    return res.status(400).json({ error: "Informe o valor da diaria para calcular." });
+  }
 
-      for (let i = 0; i < 8; i++) {
-        await page.mouse.wheel(0, 2500);
-        await page.waitForTimeout(300);
-      }
-      await page.waitForTimeout(500);
+  const taxaOcupacao = Math.min(Math.max(paraNumero(ocupacao) ?? 60, 0), 100) / 100;
+  const GANHO_SUPERHOST = 0.09;
+  const GANHO_GUEST_FAVORITE = 0.06;
 
-      const srcs = await page.$$eval('img[src*="muscache.com/im/pictures"]', (imgs) =>
-        imgs.map((i) => i.src)
-      );
-      const vistos = new Set();
-      fotos = srcs.filter((src) => {
-        const chave = src.split("?")[0];
-        if (vistos.has(chave) || /\/User\/original|avatar/i.test(chave)) return false;
-        vistos.add(chave);
-        return true;
-      });
+  const noitesMes = 30 * taxaOcupacao;
+  const receitaMensal = valorDiaria * noitesMes;
 
-      const idMatch = url.match(/\/rooms\/(\d+)/);
-      if (idMatch) {
-        const urlFotos = `https://www.airbnb.com.br/rooms/${idMatch[1]}/photos`;
-        try {
-          await page.goto(urlFotos, { waitUntil: "domcontentloaded", timeout: 15000 });
-          await page.waitForTimeout(1200);
-          for (let i = 0; i < 8; i++) {
-            await page.mouse.wheel(0, 2500);
-            await page.waitForTimeout(250);
-          }
-          const srcs2 = await page.$$eval('img[src*="muscache.com/im/pictures"]', (imgs) =>
-            imgs.map((i) => i.src)
-          );
-          srcs2.forEach((src) => {
-            const chave = src.split("?")[0];
-            if (!vistos.has(chave) && !/\/User\/original|avatar/i.test(chave)) {
-              vistos.add(chave);
-              fotos.push(src);
-            }
-          });
-        } catch (_) {}
-      }
-    } catch (_) {}
+  const perdaSuperhost = e_superhost ? 0 : receitaMensal * GANHO_SUPERHOST;
+  const perdaGuestFavorite = e_guest_favorite ? 0 : receitaMensal * GANHO_GUEST_FAVORITE;
+  const perdaMensal = perdaSuperhost + perdaGuestFavorite;
 
-    const categorias = {};
-    const categoriasBusca = [
-      { chave: "limpeza", termos: ["limpeza"] },
-      { chave: "exatidao", termos: ["exatidão do anúncio", "exatidao do anuncio"] },
-      { chave: "checkin", termos: ["check-in"] },
-      { chave: "comunicacao", termos: ["comunicação", "comunicacao"] },
-      { chave: "localizacao", termos: ["localização", "localizacao"] },
-      { chave: "custo_beneficio", termos: ["custo-benefício", "custo-beneficio"] },
-    ];
+  const notaAtual = paraNumero(nota);
 
-    for (const { chave, termos } of categoriasBusca) {
-      for (const termo of termos) {
-        const escapado = termo.replace(/[.*+?^\${}()|[\]\\]/g, "\\$&");
-        const regex = new RegExp("Pontuação:\\s*(\\d[.,]\\d{1,2})\\s+de\\s+5\\s+estrelas\\s+para\\s+" + escapado, "i");
-        const m = textoPagina.match(regex);
-        if (m) {
-          categorias[chave] = paraNumero(m[1]);
-          break;
-        }
-      }
-    }
-
-    return {
-      titulo,
-      nota,
-      num_avaliacoes: numAvaliacoes,
-      descricao,
-      fotos,
-      categorias: Object.keys(categorias).length ? categorias : null,
-    };
-}
+  return res.json({
+    e_superhost: !!e_superhost,
+    e_guest_favorite: !!e_guest_favorite,
+    receita_mensal_estimada: Math.round(receitaMensal),
+    perda_superhost_mensal: Math.round(perdaSuperhost),
+    perda_guest_favorite_mensal: Math.round(perdaGuestFavorite),
+    perda_mensal_estimada: Math.round(perdaMensal),
+    perda_anual_estimada: Math.round(perdaMensal * 12),
+    falta_de_nota: {
+      para_superhost: notaAtual === null ? null : Math.max(0, +(4.8 - notaAtual).toFixed(2)),
+      para_guest_favorite: notaAtual === null ? null : Math.max(0, +(4.9 - notaAtual).toFixed(2)),
+    },
+    premissas: [
+      `Diaria de R$ ${valorDiaria.toFixed(2)} e ocupacao de ${Math.round(taxaOcupacao * 100)}% (${noitesMes.toFixed(0)} noites/mes).`,
+      "Referencia de mercado: o selo Superhost costuma valer por volta de 9% a mais de faturamento, e o Preferido dos Hospedes (Guest Favorite) por volta de 6%, por melhorarem posicao na busca e taxa de conversao.",
+      "Os dois se somam quando faltam os dois selos, mas nao sao garantia: servem para dimensionar a ordem de grandeza do que esta ficando na mesa.",
+    ],
+  });
+});
 
 // ROTA 2: Diagnostico
 app.post("/api/diagnosticar", (req, res) => {
