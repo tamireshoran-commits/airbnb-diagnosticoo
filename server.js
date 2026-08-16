@@ -165,44 +165,71 @@ app.post("/api/analisar-avaliacoes", async (req, res) => {
   }
 });
 
-// ROTA: Quanto o anuncio perde por nao ter os selos
+// ROTA: Projecao de faturamento por cenario de selo
 app.post("/api/perda-selos", (req, res) => {
-  const { diaria, ocupacao, e_superhost, e_guest_favorite, nota } = req.body || {};
+  const { diaria, ocupacao, e_superhost, e_guest_favorite, nota, ganho_superhost, ganho_guest_favorite } = req.body || {};
 
   const valorDiaria = paraNumero(diaria);
   if (valorDiaria === null || valorDiaria <= 0) {
     return res.status(400).json({ error: "Informe o valor da diaria para calcular." });
   }
 
-  const taxaOcupacao = Math.min(Math.max(paraNumero(ocupacao) ?? 60, 0), 100) / 100;
-  const GANHO_SUPERHOST = 0.09;
-  const GANHO_GUEST_FAVORITE = 0.06;
+  // Ganho de OCUPACAO (nao de diaria): o efeito principal dos selos e aparecer
+  // melhor na busca e converter mais, ou seja, encher mais o calendario.
+  const upSuper = (paraNumero(ganho_superhost) ?? 8) / 100;
+  const upFav = (paraNumero(ganho_guest_favorite) ?? 6) / 100;
 
-  const noitesMes = 30 * taxaOcupacao;
-  const receitaMensal = valorDiaria * noitesMes;
+  const ocupAtual = Math.min(Math.max(paraNumero(ocupacao) ?? 60, 0), 100) / 100;
+  const temSuper = !!e_superhost;
+  const temFav = !!e_guest_favorite;
 
-  const perdaSuperhost = e_superhost ? 0 : receitaMensal * GANHO_SUPERHOST;
-  const perdaGuestFavorite = e_guest_favorite ? 0 : receitaMensal * GANHO_GUEST_FAVORITE;
-  const perdaMensal = perdaSuperhost + perdaGuestFavorite;
+  // Remove o efeito dos selos que o anuncio JA tem, para achar a ocupacao "crua".
+  const fatorAtual = 1 + (temSuper ? upSuper : 0) + (temFav ? upFav : 0);
+  const ocupBase = ocupAtual / fatorAtual;
+
+  function cenario(comSuper, comFav) {
+    const fator = 1 + (comSuper ? upSuper : 0) + (comFav ? upFav : 0);
+    const ocup = Math.min(ocupBase * fator, 1);
+    const noites = 30 * ocup;
+    const mensal = valorDiaria * noites;
+    return {
+      superhost: comSuper,
+      guest_favorite: comFav,
+      ocupacao_pct: +(ocup * 100).toFixed(1),
+      noites_mes: +noites.toFixed(1),
+      receita_mensal: Math.round(mensal),
+      receita_anual: Math.round(mensal * 12),
+      e_o_atual: comSuper === temSuper && comFav === temFav,
+    };
+  }
+
+  const cenarios = {
+    nenhum: cenario(false, false),
+    so_superhost: cenario(true, false),
+    so_guest_favorite: cenario(false, true),
+    ambos: cenario(true, true),
+  };
+
+  const atual = cenario(temSuper, temFav);
+  const ideal = cenarios.ambos;
+  const perdaMensal = Math.max(0, ideal.receita_mensal - atual.receita_mensal);
 
   const notaAtual = paraNumero(nota);
 
   return res.json({
-    e_superhost: !!e_superhost,
-    e_guest_favorite: !!e_guest_favorite,
-    receita_mensal_estimada: Math.round(receitaMensal),
-    perda_superhost_mensal: Math.round(perdaSuperhost),
-    perda_guest_favorite_mensal: Math.round(perdaGuestFavorite),
-    perda_mensal_estimada: Math.round(perdaMensal),
-    perda_anual_estimada: Math.round(perdaMensal * 12),
+    atual,
+    cenarios,
+    perda_mensal_estimada: perdaMensal,
+    perda_anual_estimada: perdaMensal * 12,
+    ganhos_usados: { superhost_pct: upSuper * 100, guest_favorite_pct: upFav * 100 },
     falta_de_nota: {
       para_superhost: notaAtual === null ? null : Math.max(0, +(4.8 - notaAtual).toFixed(2)),
       para_guest_favorite: notaAtual === null ? null : Math.max(0, +(4.9 - notaAtual).toFixed(2)),
     },
     premissas: [
-      `Diaria de R$ ${valorDiaria.toFixed(2)} e ocupacao de ${Math.round(taxaOcupacao * 100)}% (${noitesMes.toFixed(0)} noites/mes).`,
-      "Referencia de mercado: o selo Superhost costuma valer por volta de 9% a mais de faturamento, e o Preferido dos Hospedes (Guest Favorite) por volta de 6%, por melhorarem posicao na busca e taxa de conversao.",
-      "Os dois se somam quando faltam os dois selos, mas nao sao garantia: servem para dimensionar a ordem de grandeza do que esta ficando na mesa.",
+      `Diaria de R$ ${valorDiaria.toFixed(2)} mantida igual em todos os cenarios: o que muda e quantas noites o calendario enche.`,
+      `Estimativa usada: Superhost enche o calendario cerca de ${(upSuper * 100).toFixed(0)}% a mais, e o Preferido dos Hospedes cerca de ${(upFav * 100).toFixed(0)}% a mais, por melhorarem a posicao na busca e a taxa de conversao.`,
+      "Sao estimativas de mercado para dimensionar a ordem de grandeza, nao uma garantia do Airbnb.",
     ],
   });
 });

@@ -670,18 +670,57 @@ function renderPerdaSelos() {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error || "Falha ao calcular.");
 
-      let html = `<div class="metric"><span class="num">R$ ${d.perda_anual_estimada.toLocaleString("pt-BR")}</span><span class="label">por ano é o que esse anúncio deixa de faturar por não ter os dois selos.</span></div>`;
-      html += `<ul class="pontos" style="margin-top:10px;">`;
-      html += `<li class="${d.e_superhost ? "bom" : "melhorar"}">Superhost: ${d.e_superhost ? "já tem, nada a perder aqui." : `faltando, custa cerca de R$ ${d.perda_superhost_mensal.toLocaleString("pt-BR")}/mês.`}</li>`;
-      html += `<li class="${d.e_guest_favorite ? "bom" : "melhorar"}">Preferido dos Hóspedes: ${d.e_guest_favorite ? "já tem, nada a perder aqui." : `faltando, custa cerca de R$ ${d.perda_guest_favorite_mensal.toLocaleString("pt-BR")}/mês.`}</li>`;
-      if (d.falta_de_nota.para_superhost > 0) {
-        html += `<li class="melhorar">Faltam ${d.falta_de_nota.para_superhost} pontos de nota para o Superhost (mínimo 4,80).</li>`;
+      const reais = (n) => "R$ " + Number(n).toLocaleString("pt-BR");
+      const ordem = [
+        ["nenhum", "Sem nenhum selo"],
+        ["so_superhost", "Só Superhost"],
+        ["so_guest_favorite", "Só Preferido dos Hóspedes"],
+        ["ambos", "Os dois selos"],
+      ];
+
+      let html = "";
+      if (d.perda_anual_estimada > 0) {
+        html += `<div class="metric"><span class="num">${reais(d.perda_anual_estimada)}</span><span class="label">por ano é o que esse anúncio deixa de faturar hoje, comparado a ter os dois selos.</span></div>`;
+      } else {
+        html += `<div class="metric"><span class="num">${reais(d.atual.receita_anual)}</span><span class="label">por ano é a projeção atual. O anúncio já está no melhor cenário de selos.</span></div>`;
       }
-      if (d.falta_de_nota.para_guest_favorite > 0) {
-        html += `<li class="melhorar">Faltam ${d.falta_de_nota.para_guest_favorite} pontos para o Preferido dos Hóspedes (referência 4,90).</li>`;
+
+      html += `<div style="overflow-x:auto; margin-top:16px;"><table style="width:100%; border-collapse:collapse; font-size:14px;">
+        <thead><tr style="text-align:left; color:var(--text-dim); font-size:12px; text-transform:uppercase;">
+          <th style="padding:8px 6px;">Cenário</th>
+          <th style="padding:8px 6px;">Ocupação</th>
+          <th style="padding:8px 6px;">Noites/mês</th>
+          <th style="padding:8px 6px;">Por mês</th>
+          <th style="padding:8px 6px;">Por ano</th>
+          <th style="padding:8px 6px;">Diferença/ano</th>
+        </tr></thead><tbody>`;
+
+      ordem.forEach(([chave, nome]) => {
+        const c = d.cenarios[chave];
+        const dif = c.receita_anual - d.atual.receita_anual;
+        const destaque = c.e_o_atual ? ' style="background:var(--panel-2); font-weight:700;"' : "";
+        const corDif = dif > 0 ? "var(--good)" : dif < 0 ? "var(--bad)" : "var(--text-dim)";
+        html += `<tr${destaque}>
+          <td style="padding:10px 6px; border-top:1px solid var(--border);">${nome}${c.e_o_atual ? ' <span class="badge-pill sim" style="font-size:10px;">hoje</span>' : ""}</td>
+          <td style="padding:10px 6px; border-top:1px solid var(--border);">${c.ocupacao_pct}%</td>
+          <td style="padding:10px 6px; border-top:1px solid var(--border);">${c.noites_mes}</td>
+          <td style="padding:10px 6px; border-top:1px solid var(--border);">${reais(c.receita_mensal)}</td>
+          <td style="padding:10px 6px; border-top:1px solid var(--border);">${reais(c.receita_anual)}</td>
+          <td style="padding:10px 6px; border-top:1px solid var(--border); color:${corDif};">${dif === 0 ? "—" : (dif > 0 ? "+" : "") + reais(dif)}</td>
+        </tr>`;
+      });
+      html += `</tbody></table></div>`;
+
+      const falta = [];
+      if (d.falta_de_nota.para_superhost > 0) falta.push(`Faltam ${d.falta_de_nota.para_superhost} pontos de nota para o Superhost (mínimo 4,80).`);
+      if (d.falta_de_nota.para_guest_favorite > 0) falta.push(`Faltam ${d.falta_de_nota.para_guest_favorite} pontos para o Preferido dos Hóspedes (referência 4,90).`);
+      if (falta.length) {
+        html += `<ul class="pontos" style="margin-top:14px;">`;
+        falta.forEach((f) => (html += `<li class="melhorar">${f}</li>`));
+        html += `</ul>`;
       }
-      html += `</ul>`;
-      html += `<div class="hint" style="margin-top:10px;">Receita mensal estimada hoje: R$ ${d.receita_mensal_estimada.toLocaleString("pt-BR")}. ${d.premissas.join(" ")}</div>`;
+
+      html += `<div class="hint" style="margin-top:12px;">${d.premissas.join(" ")}</div>`;
       alvo.innerHTML = html;
     } catch (err) {
       alvo.innerHTML = `<div class='hint' style='color:var(--bad);'>Erro: ${err.message}</div>`;
