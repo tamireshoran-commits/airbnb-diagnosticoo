@@ -275,6 +275,16 @@
     </div>
 
     <div class="card">
+      <h2>Quanto você está deixando na mesa</h2>
+      <div id="blocoPerda"></div>
+    </div>
+
+    <div class="card">
+      <h2>O que os hóspedes estão realmente dizendo</h2>
+      <div id="blocoAvaliacoes2"></div>
+    </div>
+
+    <div class="card">
       <h2>Fotos</h2>
       <div id="blocoFotos"></div>
     </div>
@@ -328,6 +338,8 @@ el("btnBuscar").addEventListener("click", async () => {
     el("numFotos").value = data.fotos ? data.fotos.length : "";
     
     window.__fotosURLs = data.fotos || [];
+    window.__avaliacoes = data.avaliacoes || [];
+    window.__anuncio = data;
 
     showStatus(status, "Dados carregados com sucesso!", "ok");
   } catch (err) {
@@ -472,6 +484,9 @@ function renderResultados(data) {
   seloHtml += `</ol></div>`;
 
   el("blocoSelo").innerHTML = seloHtml;
+
+  renderPerdaSelos();
+  renderBlocoAvaliacoes();
 }
 
 function calcularImpactoAvaliacao() {
@@ -513,6 +528,146 @@ function calcularImpactoAvaliacao() {
   }
 
   resultado.innerHTML = html;
+}
+
+function renderPerdaSelos() {
+  const a = window.__anuncio || {};
+  const bloco = el("blocoPerda");
+  const selo = (ok, nome) =>
+    `<span class="badge-pill ${ok ? "sim" : "nao"}" style="margin-right:6px;">${ok ? "TEM" : "NÃO TEM"} ${nome}</span>`;
+
+  bloco.innerHTML = `
+    <div style="margin-bottom:14px;">
+      ${selo(a.e_superhost, "Superhost")}${selo(a.e_guest_favorite, "Preferido dos Hóspedes")}
+    </div>
+    <div class="row" style="align-items:flex-end;">
+      <div style="flex:1; min-width:130px;">
+        <label for="diaria">Valor da sua diária (R$)</label>
+        <input type="number" id="diaria" min="0" step="10" placeholder="Ex: 320" />
+      </div>
+      <div style="flex:1; min-width:130px;">
+        <label for="ocupacao">Ocupação média (%)</label>
+        <input type="number" id="ocupacao" min="0" max="100" step="5" value="60" />
+      </div>
+      <button id="btnCalcularPerda" type="button">Calcular perda</button>
+    </div>
+    <div id="resultadoPerda" style="margin-top:14px;"></div>`;
+
+  el("btnCalcularPerda").addEventListener("click", async () => {
+    const alvo = el("resultadoPerda");
+    alvo.innerHTML = "<div class='hint'>Calculando...</div>";
+    try {
+      const res = await fetch(API_BASE + "/api/perda-selos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          diaria: el("diaria").value,
+          ocupacao: el("ocupacao").value,
+          e_superhost: a.e_superhost,
+          e_guest_favorite: a.e_guest_favorite,
+          nota: el("nota").value,
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error || "Falha ao calcular.");
+
+      let html = `<div class="metric"><span class="num">R$ ${d.perda_anual_estimada.toLocaleString("pt-BR")}</span><span class="label">por ano é o que esse anúncio deixa de faturar por não ter os dois selos.</span></div>`;
+      html += `<ul class="pontos" style="margin-top:10px;">`;
+      html += `<li class="${d.e_superhost ? "bom" : "melhorar"}">Superhost: ${d.e_superhost ? "já tem, nada a perder aqui." : `faltando, custa cerca de R$ ${d.perda_superhost_mensal.toLocaleString("pt-BR")}/mês.`}</li>`;
+      html += `<li class="${d.e_guest_favorite ? "bom" : "melhorar"}">Preferido dos Hóspedes: ${d.e_guest_favorite ? "já tem, nada a perder aqui." : `faltando, custa cerca de R$ ${d.perda_guest_favorite_mensal.toLocaleString("pt-BR")}/mês.`}</li>`;
+      if (d.falta_de_nota.para_superhost > 0) {
+        html += `<li class="melhorar">Faltam ${d.falta_de_nota.para_superhost} pontos de nota para o Superhost (mínimo 4,80).</li>`;
+      }
+      if (d.falta_de_nota.para_guest_favorite > 0) {
+        html += `<li class="melhorar">Faltam ${d.falta_de_nota.para_guest_favorite} pontos para o Preferido dos Hóspedes (referência 4,90).</li>`;
+      }
+      html += `</ul>`;
+      html += `<div class="hint" style="margin-top:10px;">Receita mensal estimada hoje: R$ ${d.receita_mensal_estimada.toLocaleString("pt-BR")}. ${d.premissas.join(" ")}</div>`;
+      alvo.innerHTML = html;
+    } catch (err) {
+      alvo.innerHTML = `<div class='hint' style='color:var(--bad);'>Erro: ${err.message}</div>`;
+    }
+  });
+}
+
+function renderBlocoAvaliacoes() {
+  const avs = window.__avaliacoes || [];
+  const bloco = el("blocoAvaliacoes2");
+
+  if (!avs.length) {
+    bloco.innerHTML = "<div class='hint'>Busque o anúncio automaticamente para ler as avaliações reais.</div>";
+    return;
+  }
+
+  const negativas = avs.filter((a) => a.nota !== null && a.nota <= 4);
+  const semResposta = negativas.filter((a) => !a.resposta);
+  const comResposta = avs.filter((a) => a.resposta).length;
+
+  bloco.innerHTML = `
+    <div class="criterio-linha"><span>Avaliações lidas</span><span class="val">${avs.length}</span></div>
+    <div class="criterio-linha"><span>Avaliações com nota 4 ou menos</span><span class="val">${negativas.length}</span></div>
+    <div class="criterio-linha"><span>Críticas que ficaram <strong>sem resposta</strong></span><span class="val">${semResposta.length}</span></div>
+    <div class="criterio-linha"><span>Taxa de resposta do anfitrião</span><span class="val">${Math.round((comResposta / avs.length) * 100)}%</span></div>
+    <div style="margin-top:16px;">
+      <button id="btnAnalisarAvaliacoes" type="button">Expor os problemas com IA</button>
+      <div class="hint" style="margin-top:8px;">A IA lê todas as ${avs.length} avaliações e as suas respostas, e aponta sem filtro o que está afastando hóspede.</div>
+      <div id="statusAvaliacoesIA" class="status"></div>
+      <div id="resultadoAvaliacoesIA" style="margin-top:14px;"></div>
+    </div>`;
+
+  el("btnAnalisarAvaliacoes").addEventListener("click", analisarAvaliacoesComIA);
+}
+
+async function analisarAvaliacoesComIA() {
+  const btn = el("btnAnalisarAvaliacoes");
+  const status = el("statusAvaliacoesIA");
+  const alvo = el("resultadoAvaliacoesIA");
+
+  btn.disabled = true;
+  btn.textContent = "Analisando avaliações...";
+  showStatus(status, "A IA está lendo todas as avaliações, aguarde.", "ok");
+  alvo.innerHTML = "";
+
+  try {
+    const res = await fetch(API_BASE + "/api/analisar-avaliacoes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ avaliacoes: window.__avaliacoes }),
+    });
+    const d = await res.json();
+    if (!res.ok) throw new Error(d.error || "Falha ao analisar.");
+
+    hideStatus(status);
+    const a = d.analise || {};
+    let html = "";
+
+    if (a.problemas_recorrentes && a.problemas_recorrentes.length) {
+      html += `<div style="font-weight:700; font-size:14px; margin:4px 0 8px;">Problemas que se repetem</div><ul class="pontos">`;
+      a.problemas_recorrentes.forEach((p) => {
+        const cor = p.gravidade === "alta" ? "var(--bad)" : p.gravidade === "media" ? "var(--warn)" : "var(--text-dim)";
+        html += `<li class="melhorar"><strong>${p.problema}</strong> <span style="color:${cor}; font-size:12px;">(${p.gravidade}, aparece ${p.quantas_vezes}x)</span>${p.evidencia ? `<div class="hint" style="margin-top:4px;">"${p.evidencia}"</div>` : ""}</li>`;
+      });
+      html += `</ul>`;
+    }
+
+    const secao = (titulo, itens) => {
+      if (!itens || !itens.length) return "";
+      let h = `<div style="font-weight:700; font-size:14px; margin:18px 0 8px;">${titulo}</div><ul class="pontos">`;
+      itens.forEach((i) => (h += `<li class="melhorar">${i}</li>`));
+      return h + `</ul>`;
+    };
+
+    html += secao("Erros nas suas respostas", a.erros_nas_respostas);
+    html += secao("O que isso está custando", a.o_que_esta_custando_dinheiro);
+    html += secao("Faça isso primeiro", a.acoes_prioritarias);
+
+    alvo.innerHTML = html || "<div class='hint'>A IA não retornou pontos dessa vez.</div>";
+  } catch (err) {
+    showStatus(status, "Erro: " + err.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Expor os problemas com IA";
+  }
 }
 
 el("btnSugerirTitulos").addEventListener("click", sugerirTitulos);
@@ -591,8 +746,19 @@ async function analisarFotosComIA() {
         <div style="display:flex; gap:14px; align-items:flex-start;">
           <img src="${r.url}" style="width:110px; height:80px; object-fit:cover; border-radius:6px; flex-shrink:0;" />
           <div>
-            <div class="hint" style="margin-bottom:4px;">Foto ${i + 1}</div>
-            ${r.analise ? `<div>${r.analise}</div>` : `<div style="color:var(--bad);">Nao foi possivel analisar: ${r.erro}</div>`}
+            <div class="hint" style="margin-bottom:4px;">Foto ${i + 1}${r.detalhe && r.detalhe.nota !== undefined ? ` · <strong style="color:${r.detalhe.nota >= 8 ? "var(--good)" : r.detalhe.nota >= 6 ? "var(--warn)" : "var(--bad)"};">nota ${r.detalhe.nota}/10</strong>` : ""}</div>
+            ${
+              r.detalhe
+                ? `<div style="font-size:14px;">
+                     <div><strong>Problema:</strong> ${r.detalhe.problema_principal || "-"}</div>
+                     <div style="margin-top:4px;"><strong>Luz:</strong> ${r.detalhe.luz || "-"}</div>
+                     <div style="margin-top:4px;"><strong>Enquadramento:</strong> ${r.detalhe.enquadramento || "-"}</div>
+                     <div style="margin-top:6px; color:var(--good);"><strong>Como corrigir:</strong> ${r.detalhe.como_corrigir || "-"}</div>
+                   </div>`
+                : r.analise
+                ? `<div>${r.analise}</div>`
+                : `<div style="color:var(--bad);">Nao foi possivel analisar: ${r.erro}</div>`
+            }
           </div>
         </div>
       </div>`;
