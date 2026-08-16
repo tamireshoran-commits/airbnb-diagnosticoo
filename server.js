@@ -337,10 +337,15 @@ app.post("/api/analisar-fotos", async (req, res) => {
         const base64 = buffer.toString("base64");
 
         const prompt =
-          "Voce e um especialista em fotografia para Airbnb. " +
-          "Olhe esta foto e responda em portugues, em no maximo 2 frases: " +
-          "(1) o que transmite bem e (2) uma sugestao de melhoria. " +
-          "Seja concreto.";
+          "Voce e um fotografo profissional especializado em imoveis para Airbnb, e e severo na avaliacao. " +
+          "Analise esta foto e responda APENAS com JSON valido, sem blocos de codigo, no formato: " +
+          '{"nota": 0, "luz": "...", "enquadramento": "...", "problema_principal": "...", "como_corrigir": "..."}. ' +
+          "nota e de 0 a 10 para a qualidade da foto como anuncio. " +
+          "luz avalia iluminacao (escura, estourada, luz amarelada artificial, sombras duras, boa luz natural). " +
+          "enquadramento avalia composicao (cortes ruins, angulo baixo demais, torto, ambiente pequeno mal aproveitado, bagunca no quadro). " +
+          "problema_principal e o defeito mais grave em uma frase curta. " +
+          "como_corrigir e uma acao pratica e concreta que o anfitriao consegue executar. " +
+          "Seja direto, sem elogio vazio.";
 
         const geminiRes = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
@@ -369,7 +374,14 @@ app.post("/api/analisar-fotos", async (req, res) => {
           }
         } else {
           const texto = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          resultados.push({ url, analise: texto ? texto.trim() : null, erro: null });
+          let detalhe = null;
+          if (texto) {
+            const limpo = texto.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+            try {
+              detalhe = JSON.parse(limpo);
+            } catch (_) {}
+          }
+          resultados.push({ url, analise: texto ? texto.trim() : null, detalhe, erro: null });
         }
       } catch (err) {
         resultados.push({ url, analise: null, erro: err.message });
