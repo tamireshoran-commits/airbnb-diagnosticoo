@@ -121,10 +121,12 @@ app.post("/api/analisar-avaliacoes", async (req, res) => {
     "Abaixo estao as avaliacoes reais de um anuncio, com as respostas do anfitriao quando existirem.\n\n" +
     linhas +
     "\n\nResponda em portugues, sem rodeios e sem elogios vazios, em JSON valido com exatamente estas chaves:\n" +
-    '{"problemas_recorrentes": [{"problema": "...", "quantas_vezes": 0, "gravidade": "alta|media|baixa", "evidencia": "trecho curto de uma avaliacao real"}], ' +
+    '{"nota": 0, "veredito": "uma frase sobre o que as avaliacoes revelam", ' +
+    '"problemas_recorrentes": [{"problema": "...", "quantas_vezes": 0, "gravidade": "alta|media|baixa", "evidencia": "trecho curto de uma avaliacao real"}], ' +
     '"erros_nas_respostas": ["..."], "o_que_esta_custando_dinheiro": ["..."], "acoes_prioritarias": ["..."]}\n' +
     "Em problemas_recorrentes, liste no maximo 6, do mais grave ao menos grave, considerando so o que aparece de fato nas avaliacoes. " +
     "Em erros_nas_respostas, aponte respostas defensivas, genericas, ou reclamacoes serias que ficaram sem resposta. " +
+    "nota vai de 0 a 10 e mede a saude da reputacao lida nas avaliacoes: problemas recorrentes, gravidade deles, e o quanto o anfitriao responde e responde bem. " +
     "Responda APENAS com o JSON, sem texto antes ou depois, sem blocos de codigo.";
 
   try {
