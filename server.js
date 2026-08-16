@@ -4,6 +4,7 @@ const express = require("express");
 const cors = require("cors");
 const { buscarAnuncio, buscarAvaliacoes } = require("./airbnb");
 const auth = require("./auth");
+const ia = require("./ia");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -102,8 +103,8 @@ app.post("/api/analisar-avaliacoes", async (req, res) => {
   if (!Array.isArray(avaliacoes) || !avaliacoes.length) {
     return res.status(400).json({ error: "Nenhuma avaliacao disponivel. Busque o anuncio automaticamente primeiro." });
   }
-  if (!process.env.GEMINI_API_KEY) {
-    return res.status(500).json({ error: "Chave da API do Gemini nao encontrada." });
+  if (!ia.provedoresAtivos().length) {
+    return res.status(500).json({ error: "Nenhuma chave de IA configurada no servidor." });
   }
 
   const negativas = avaliacoes.filter((a) => a.nota !== null && a.nota <= 4);
@@ -126,30 +127,15 @@ app.post("/api/analisar-avaliacoes", async (req, res) => {
     "Responda APENAS com o JSON, sem texto antes ou depois, sem blocos de codigo.";
 
   try {
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-      }
-    );
-    const data = await geminiRes.json();
-    if (!geminiRes.ok) {
-      return res.status(502).json({ error: data?.error?.message || "Erro na API do Gemini." });
-    }
-
-    const texto = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    const limpo = texto.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-    let analise;
-    try {
-      analise = JSON.parse(limpo);
-    } catch (_) {
+    const { texto, provedor } = await ia.analisarTexto(prompt, { maxTokens: 4096 });
+    const analise = ia.lerJson(texto);
+    if (!analise) {
       return res.status(502).json({ error: "A IA respondeu num formato inesperado. Tente novamente." });
     }
 
     return res.json({
       analise,
+      provedor,
       estatisticas: {
         total: avaliacoes.length,
         negativas: negativas.length,
@@ -336,8 +322,8 @@ app.post("/api/sugerir-titulos", async (req, res) => {
   try {
     const { tituloAtual, descricao } = req.body || {};
 
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: "Chave da API do Gemini nao encontrada." });
+    if (!ia.provedoresAtivos().length) {
+      return res.status(500).json({ error: "Nenhuma chave de IA configurada no servidor." });
     }
 
     const prompt =
@@ -347,29 +333,14 @@ app.post("/api/sugerir-titulos", async (req, res) => {
       "De 5 sugestoes de titulo MELHORES que esse. Cada titulo deve ter NO MAXIMO 50 caracteres. " +
       "Responda APENAS com os 5 titulos, um por linha, sem numeracao, sem aspas, sem texto explicativo.";
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
-      }
-    );
-
-    const data = await geminiRes.json();
-    if (!geminiRes.ok) {
-      const msgErro = data?.error?.message || "Erro desconhecido na API do Gemini.";
-      return res.status(502).json({ error: msgErro });
-    }
-
-    const texto = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const { texto, provedor } = await ia.analisarTexto(prompt, { maxTokens: 1024 });
     const titulos = texto
       .split("\n")
       .map((l) => l.replace(/^[-*\d.\s"]+/, "").replace(/"$/, "").trim())
       .filter(Boolean)
       .slice(0, 5);
 
-    return res.json({ titulos });
+    return res.json({ titulos, provedor });
   } catch (err) {
     console.error("Erro em /api/sugerir-titulos:", err);
     return res.status(500).json({ error: "Erro interno: " + err.message });
@@ -385,21 +356,28 @@ app.post("/api/analisar-fotos", async (req, res) => {
       return res.status(400).json({ error: "Nenhuma foto disponivel para analisar." });
     }
 
-    if (!process.env.GEMINI_API_KEY) {
-      return res.status(500).json({ error: "Chave da API do Gemini nao encontrada." });
+    if (!ia.provedoresAtivos().length) {
+      return res.status(500).json({ error: "Nenhuma chave de IA configurada no servidor." });
     }
 
+    const usandoClaude = ia.temClaude();
     const LIMITE_FOTOS = 40;
     const fotosParaAnalisar = fotos.slice(0, LIMITE_FOTOS);
     const resultados = [];
-    let cotaEstourada = false;
+    let provedorUsado = null;
+
+    const prompt =
+      "Voce e um fotografo profissional especializado em imoveis para Airbnb, e e severo na avaliacao. " +
+      "Analise esta foto e responda APENAS com JSON valido, sem blocos de codigo, no formato: " +
+      '{"nota": 0, "luz": "...", "enquadramento": "...", "problema_principal": "...", "como_corrigir": "..."}. ' +
+      "nota e de 0 a 10 para a qualidade da foto como anuncio. " +
+      "luz avalia iluminacao (escura, estourada, luz amarelada artificial, sombras duras, boa luz natural). " +
+      "enquadramento avalia composicao (cortes ruins, angulo baixo demais, torto, ambiente pequeno mal aproveitado, bagunca no quadro). " +
+      "problema_principal e o defeito mais grave em uma frase curta. " +
+      "como_corrigir e uma acao pratica e concreta que o anfitriao consegue executar. " +
+      "Seja direto, sem elogio vazio.";
 
     for (const url of fotosParaAnalisar) {
-      if (cotaEstourada) {
-        resultados.push({ url, analise: null, erro: "Nao analisada: cota gratuita do Gemini foi atingida nesta rodada." });
-        continue;
-      }
-
       try {
         const imgRes = await fetch(url, {
           headers: {
@@ -409,64 +387,21 @@ app.post("/api/analisar-fotos", async (req, res) => {
         });
         if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
         const buffer = Buffer.from(await imgRes.arrayBuffer());
-        const mimeType = imgRes.headers.get("content-type") || "image/jpeg";
+        const mimeType = (imgRes.headers.get("content-type") || "image/jpeg").split(";")[0];
         const base64 = buffer.toString("base64");
 
-        const prompt =
-          "Voce e um fotografo profissional especializado em imoveis para Airbnb, e e severo na avaliacao. " +
-          "Analise esta foto e responda APENAS com JSON valido, sem blocos de codigo, no formato: " +
-          '{"nota": 0, "luz": "...", "enquadramento": "...", "problema_principal": "...", "como_corrigir": "..."}. ' +
-          "nota e de 0 a 10 para a qualidade da foto como anuncio. " +
-          "luz avalia iluminacao (escura, estourada, luz amarelada artificial, sombras duras, boa luz natural). " +
-          "enquadramento avalia composicao (cortes ruins, angulo baixo demais, torto, ambiente pequeno mal aproveitado, bagunca no quadro). " +
-          "problema_principal e o defeito mais grave em uma frase curta. " +
-          "como_corrigir e uma acao pratica e concreta que o anfitriao consegue executar. " +
-          "Seja direto, sem elogio vazio.";
-
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${process.env.GEMINI_API_KEY}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              contents: [
-                {
-                  parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } }],
-                },
-              ],
-            }),
-          }
-        );
-
-        const data = await geminiRes.json();
-        if (!geminiRes.ok) {
-          const status = data?.error?.status || "";
-          const msgErro = data?.error?.message || "Erro desconhecido.";
-          if (geminiRes.status === 429 || status === "RESOURCE_EXHAUSTED") {
-            cotaEstourada = true;
-            resultados.push({ url, analise: null, erro: "Cota gratuita do Gemini atingida." });
-          } else {
-            resultados.push({ url, analise: null, erro: msgErro });
-          }
-        } else {
-          const texto = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-          let detalhe = null;
-          if (texto) {
-            const limpo = texto.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-            try {
-              detalhe = JSON.parse(limpo);
-            } catch (_) {}
-          }
-          resultados.push({ url, analise: texto ? texto.trim() : null, detalhe, erro: null });
-        }
+        const { texto, provedor } = await ia.analisarImagem(prompt, base64, mimeType, { maxTokens: 1024 });
+        provedorUsado = provedor;
+        resultados.push({ url, analise: texto || null, detalhe: ia.lerJson(texto), erro: null });
       } catch (err) {
         resultados.push({ url, analise: null, erro: err.message });
       }
 
-      await new Promise((r) => setTimeout(r, 4500));
+      // O plano gratuito do Gemini limita a velocidade; a Claude nao precisa dessa pausa.
+      if (!usandoClaude) await new Promise((r) => setTimeout(r, 4500));
     }
 
-    return res.json({ resultados, total_analisadas: resultados.length, total_disponivel: fotos.length, cota_estourada: cotaEstourada });
+    return res.json({ resultados, total_analisadas: resultados.length, total_disponivel: fotos.length, provedor: provedorUsado });
   } catch (err) {
     console.error("Erro em /api/analisar-fotos:", err);
     return res.status(500).json({ error: "Erro interno: " + err.message });

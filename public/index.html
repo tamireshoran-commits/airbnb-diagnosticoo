@@ -926,8 +926,9 @@ async function analisarFotosComIA() {
     if (data.total_disponivel > data.total_analisadas) {
       html += `<div class="hint">Analisadas ${data.total_analisadas} de ${data.total_disponivel} fotos encontradas (limite de seguranca por rodada).</div>`;
     }
-    if (data.cota_estourada) {
-      html += `<div class="hint" style="color:var(--bad); margin-top:6px;">A cota gratuita do Gemini foi atingida durante essa analise. Espere um pouco (a cota por minuto libera rapido; a cota diaria so libera no dia seguinte) e tente novamente para as fotos que faltaram.</div>`;
+    const falhas = data.resultados.filter((r) => r.erro).length;
+    if (falhas) {
+      html += `<div class="hint" style="color:var(--bad); margin-top:6px;">${falhas} foto(s) não puderam ser analisadas nesta rodada. Tente novamente daqui a pouco.</div>`;
     }
     resultado.innerHTML = html;
   } catch (err) {
