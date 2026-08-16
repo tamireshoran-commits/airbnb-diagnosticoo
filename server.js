@@ -30,11 +30,32 @@ app.post("/api/extrair", async (req, res) => {
   }
 
   let browser;
+  const TIMEOUT_MS = 45000;
   try {
-    browser = await chromium.launch({ channel: "chromium", args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const resultado = await Promise.race([
+      extrairAnuncio(url, (b) => { browser = b; }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("A busca demorou demais e foi cancelada. Tente novamente ou preencha os dados manualmente.")), TIMEOUT_MS)
+      ),
+    ]);
+    return res.json(resultado);
+  } catch (err) {
+    console.error("Erro em /api/extrair:", err.message);
+    return res.status(502).json({ error: "Nao foi possivel buscar o anuncio: " + err.message });
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+});
+
+async function extrairAnuncio(url, setBrowser) {
+  const browser = await chromium.launch({
+      channel: "chromium",
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+    });
+    setBrowser(browser);
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 25000 });
+    await page.waitForTimeout(1500);
 
     const textoVisivel = await page.evaluate(() => document.body.innerText);
     const ariaLabels = await page.evaluate(() =>
@@ -81,11 +102,11 @@ app.post("/api/extrair", async (req, res) => {
         await page.waitForTimeout(1500);
       }
 
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 8; i++) {
         await page.mouse.wheel(0, 2500);
-        await page.waitForTimeout(350);
+        await page.waitForTimeout(300);
       }
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(500);
 
       const srcs = await page.$$eval('img[src*="muscache.com/im/pictures"]', (imgs) =>
         imgs.map((i) => i.src)
@@ -102,11 +123,11 @@ app.post("/api/extrair", async (req, res) => {
       if (idMatch) {
         const urlFotos = `https://www.airbnb.com.br/rooms/${idMatch[1]}/photos`;
         try {
-          await page.goto(urlFotos, { waitUntil: "domcontentloaded", timeout: 20000 });
-          await page.waitForTimeout(2000);
-          for (let i = 0; i < 15; i++) {
+          await page.goto(urlFotos, { waitUntil: "domcontentloaded", timeout: 15000 });
+          await page.waitForTimeout(1200);
+          for (let i = 0; i < 8; i++) {
             await page.mouse.wheel(0, 2500);
-            await page.waitForTimeout(300);
+            await page.waitForTimeout(250);
           }
           const srcs2 = await page.$$eval('img[src*="muscache.com/im/pictures"]', (imgs) =>
             imgs.map((i) => i.src)
@@ -144,22 +165,15 @@ app.post("/api/extrair", async (req, res) => {
       }
     }
 
-    return res.json({
+    return {
       titulo,
       nota,
       num_avaliacoes: numAvaliacoes,
       descricao,
       fotos,
       categorias: Object.keys(categorias).length ? categorias : null,
-    });
-  } catch (err) {
-    if (browser) await browser.close().catch(() => {});
-    console.error("Erro em /api/extrair:", err.message);
-    return res.status(502).json({ error: "Nao foi possivel buscar o anuncio: " + err.message });
-  } finally {
-    if (browser) await browser.close().catch(() => {});
-  }
-});
+    };
+}
 
 // ROTA 2: Diagnostico
 app.post("/api/diagnosticar", (req, res) => {
