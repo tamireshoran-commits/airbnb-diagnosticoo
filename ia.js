@@ -59,6 +59,29 @@ async function claudeImagem(prompt, base64, mimeType, maxTokens) {
   return textoDaRespostaClaude(resposta);
 }
 
+// Varias imagens numa unica chamada, para analisar o conjunto.
+async function claudeImagens(prompt, imagens, maxTokens) {
+  const conteudo = [];
+  imagens.forEach((img, i) => {
+    conteudo.push({ type: "text", text: `Foto ${i + 1}:` });
+    conteudo.push({
+      type: "image",
+      source: { type: "base64", media_type: img.mimeType, data: img.base64 },
+    });
+  });
+  conteudo.push({ type: "text", text: prompt });
+
+  const resposta = await claude().messages.create({
+    model: MODELO_CLAUDE,
+    max_tokens: maxTokens,
+    messages: [{ role: "user", content: conteudo }],
+  });
+  if (resposta.stop_reason === "refusal") {
+    throw new Error("A IA recusou analisar essas imagens.");
+  }
+  return textoDaRespostaClaude(resposta);
+}
+
 // --- Gemini ---
 async function geminiChamar(partes) {
   const res = await fetch(
@@ -82,6 +105,16 @@ async function geminiChamar(partes) {
 const geminiTexto = (prompt) => geminiChamar([{ text: prompt }]);
 const geminiImagem = (prompt, base64, mimeType) =>
   geminiChamar([{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } }]);
+
+function geminiImagens(prompt, imagens) {
+  const partes = [];
+  imagens.forEach((img, i) => {
+    partes.push({ text: `Foto ${i + 1}:` });
+    partes.push({ inline_data: { mime_type: img.mimeType, data: img.base64 } });
+  });
+  partes.push({ text: prompt });
+  return geminiChamar(partes);
+}
 
 // Uma IA de cada vez, na ordem de preferencia, caindo para a outra se falhar.
 async function comFallback(tentativas) {
@@ -123,6 +156,17 @@ async function analisarImagem(prompt, base64, mimeType, { maxTokens = 1024 } = {
   ]);
 }
 
+async function analisarImagens(prompt, imagens, { maxTokens = 4096 } = {}) {
+  return comFallback([
+    {
+      nome: "claude",
+      disponivel: temClaude(),
+      executar: () => claudeImagens(prompt, imagens, maxTokens),
+    },
+    { nome: "gemini", disponivel: temGemini(), executar: () => geminiImagens(prompt, imagens) },
+  ]);
+}
+
 // Extrai o JSON de uma resposta, tolerando cercas de codigo ao redor.
 function lerJson(texto) {
   const limpo = String(texto || "")
@@ -150,4 +194,4 @@ function provedoresAtivos() {
   return lista;
 }
 
-module.exports = { analisarTexto, analisarImagem, lerJson, provedoresAtivos, temClaude, temGemini };
+module.exports = { analisarTexto, analisarImagem, analisarImagens, lerJson, provedoresAtivos, temClaude, temGemini };

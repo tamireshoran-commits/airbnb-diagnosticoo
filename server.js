@@ -347,7 +347,7 @@ app.post("/api/sugerir-titulos", async (req, res) => {
   }
 });
 
-// ROTA 5: Analisar fotos
+// ROTA 5: Analisar as fotos como conjunto
 app.post("/api/analisar-fotos", async (req, res) => {
   try {
     const { fotos } = req.body || {};
@@ -355,56 +355,80 @@ app.post("/api/analisar-fotos", async (req, res) => {
     if (!fotos || !Array.isArray(fotos) || !fotos.length) {
       return res.status(400).json({ error: "Nenhuma foto disponivel para analisar." });
     }
-
     if (!ia.provedoresAtivos().length) {
       return res.status(500).json({ error: "Nenhuma chave de IA configurada no servidor." });
     }
 
-    const usandoClaude = ia.temClaude();
-    const LIMITE_FOTOS = 40;
-    const fotosParaAnalisar = fotos.slice(0, LIMITE_FOTOS);
-    const resultados = [];
-    let provedorUsado = null;
+    const LIMITE_FOTOS = 30;
+    const selecionadas = fotos.slice(0, LIMITE_FOTOS);
 
-    const prompt =
-      "Voce e um fotografo profissional especializado em imoveis para Airbnb, e e severo na avaliacao. " +
-      "Analise esta foto e responda APENAS com JSON valido, sem blocos de codigo, no formato: " +
-      '{"nota": 0, "luz": "...", "enquadramento": "...", "problema_principal": "...", "como_corrigir": "..."}. ' +
-      "nota e de 0 a 10 para a qualidade da foto como anuncio. " +
-      "luz avalia iluminacao (escura, estourada, luz amarelada artificial, sombras duras, boa luz natural). " +
-      "enquadramento avalia composicao (cortes ruins, angulo baixo demais, torto, ambiente pequeno mal aproveitado, bagunca no quadro). " +
-      "problema_principal e o defeito mais grave em uma frase curta. " +
-      "como_corrigir e uma acao pratica e concreta que o anfitriao consegue executar. " +
-      "Seja direto, sem elogio vazio.";
+    // Pede a versao reduzida ao proprio CDN do Airbnb: para julgar luz e
+    // enquadramento essa resolucao basta, e corta drasticamente o custo.
+    const baixar = async (url) => {
+      const menor = url.split("?")[0] + "?im_w=720";
+      const r = await fetch(menor, {
+        headers: {
+          Referer: "https://www.airbnb.com.br/",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        },
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const buffer = Buffer.from(await r.arrayBuffer());
+      return {
+        url,
+        base64: buffer.toString("base64"),
+        mimeType: (r.headers.get("content-type") || "image/jpeg").split(";")[0],
+      };
+    };
 
-    for (const url of fotosParaAnalisar) {
+    const baixadas = [];
+    const falhasDownload = [];
+    for (const url of selecionadas) {
       try {
-        const imgRes = await fetch(url, {
-          headers: {
-            Referer: "https://www.airbnb.com.br/",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-          },
-        });
-        if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
-        const buffer = Buffer.from(await imgRes.arrayBuffer());
-        const mimeType = (imgRes.headers.get("content-type") || "image/jpeg").split(";")[0];
-        const base64 = buffer.toString("base64");
-
-        const { texto, provedor } = await ia.analisarImagem(prompt, base64, mimeType, { maxTokens: 1024 });
-        provedorUsado = provedor;
-        resultados.push({ url, analise: texto || null, detalhe: ia.lerJson(texto), erro: null });
+        baixadas.push(await baixar(url));
       } catch (err) {
-        resultados.push({ url, analise: null, erro: err.message });
+        falhasDownload.push({ url, erro: err.message });
       }
-
-      // O plano gratuito do Gemini limita a velocidade; a Claude nao precisa dessa pausa.
-      if (!usandoClaude) await new Promise((r) => setTimeout(r, 4500));
     }
 
-    return res.json({ resultados, total_analisadas: resultados.length, total_disponivel: fotos.length, provedor: provedorUsado });
+    if (!baixadas.length) {
+      return res.status(502).json({ error: "Nao foi possivel baixar nenhuma das fotos." });
+    }
+
+    const prompt =
+      `Acima estao as ${baixadas.length} fotos de um anuncio de Airbnb, na ordem em que aparecem (Foto 1 e a capa). ` +
+      "Voce e um fotografo profissional de imoveis e um especialista em conversao de anuncios, e e severo. " +
+      "Avalie o CONJUNTO, nao cada foto isoladamente.\n\n" +
+      "Responda APENAS com JSON valido, sem blocos de codigo, neste formato:\n" +
+      '{"nota_conjunto": 0, "veredito": "uma frase direta sobre a impressao geral", ' +
+      '"capa": {"e_a_melhor_escolha": true, "comentario": "...", "sugestao_de_capa": 0}, ' +
+      '"cobertura": {"comodos_faltando": ["..."], "comentario": "..."}, ' +
+      '"consistencia": "as fotos parecem do mesmo imovel, com luz e estilo coerentes?", ' +
+      '"ordem": "a sequencia conta uma boa historia para quem esta decidindo?", ' +
+      '"piores_fotos": [{"numero": 1, "problema": "...", "como_corrigir": "..."}], ' +
+      '"acoes_prioritarias": ["..."]}\n' +
+      "nota_conjunto vai de 0 a 10. sugestao_de_capa e o numero da foto que deveria ser a capa (use o numero da capa atual se ja estiver certa). " +
+      "comodos_faltando lista ambientes que um hospede espera ver e nao aparecem (banheiro, cozinha, area externa, vista, fachada). " +
+      "Em piores_fotos liste no maximo 6, da pior para a menos ruim, citando o numero da foto. " +
+      "Em como_corrigir de acoes concretas que o anfitriao consegue executar sozinho.";
+
+    const { texto, provedor } = await ia.analisarImagens(prompt, baixadas, { maxTokens: 4096 });
+    const analise = ia.lerJson(texto);
+    if (!analise) {
+      return res.status(502).json({ error: "A IA respondeu num formato inesperado. Tente novamente." });
+    }
+
+    return res.json({
+      analise,
+      provedor,
+      urls: baixadas.map((f) => f.url),
+      total_analisadas: baixadas.length,
+      total_disponivel: fotos.length,
+      falhas: falhasDownload.length,
+    });
   } catch (err) {
-    console.error("Erro em /api/analisar-fotos:", err);
-    return res.status(500).json({ error: "Erro interno: " + err.message });
+    console.error("Erro em /api/analisar-fotos:", err.message);
+    return res.status(500).json({ error: "Erro ao analisar as fotos: " + err.message });
   }
 });
 
